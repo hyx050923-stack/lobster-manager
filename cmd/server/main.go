@@ -1,45 +1,48 @@
 package main
 
 import (
+	"context" // 【新增】导入 context 包
 	"log"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
+	"github.com/hyx050923-stack/lobster-manager/internal/container"
 	"github.com/hyx050923-stack/lobster-manager/internal/deploy"
-	"github.com/hyx050923-stack/lobster-manager/internal/envcheck"
+	"github.com/hyx050923-stack/lobster-manager/internal/envcheck/android"
+
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
+	// 1. 初始化依赖组件
+	ctx := context.Background() // 【新增】创建根 Context
+
+	// 初始化容器管理器 (传入 ctx)
+	containerMgr := container.NewManager(ctx)
+	
+	// 初始化安卓环境检测器
+	envChecker := android.NewChecker()
+	
+	// 初始化部署服务 (注入依赖)
+	deploySvc := deploy.NewService(envChecker, containerMgr)
+
+	// 2. 启动 HTTP 服务
 	r := gin.Default()
 
-	// 环境检测接口
-	r.GET("/api/envcheck", func(c *gin.Context) {
-		rep, err := envcheck.Detect()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, rep)
-	})
-
-	// 自动修复接口
-	r.POST("/api/fix", func(c *gin.Context) {
-		result, err := envcheck.Fix()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, result)
-	})
-
-	// 一键部署接口
+	// 接口：一键部署
 	r.POST("/api/deploy", func(c *gin.Context) {
-		result := deploy.Deploy()
+		result := deploySvc.Deploy()
+		
 		if result.Success {
 			c.JSON(http.StatusOK, result)
 		} else {
-			c.JSON(http.StatusInternalServerError, result)
+			c.JSON(http.StatusOK, result)
 		}
+	})
+
+	// 接口：环境检测
+	r.GET("/api/envcheck", func(c *gin.Context) {
+		results := envChecker.CheckAll()
+		c.JSON(http.StatusOK, results)
 	})
 
 	// 健康检查
@@ -47,6 +50,6 @@ func main() {
 		c.String(200, "ok")
 	})
 
-	log.Println("Server starting on :8080")
-	r.Run(":8080")
+	log.Println("Server starting on :38080")
+	r.Run(":38080")
 }

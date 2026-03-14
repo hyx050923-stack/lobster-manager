@@ -6,6 +6,8 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
+const OpenClawImage = "openclaw:latest"
+
 // 默认安全配置
 func DefaultSecurityConfig() *container.HostConfig {
 	return &container.HostConfig{

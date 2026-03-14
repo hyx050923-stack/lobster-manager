@@ -1,0 +1,114 @@
+// internal/container/udocker/driver.go
+package container
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/hyx050923-stack/lobster-manager/internal/container"
+)
+
+type UdockerDriver struct {
+	BinPath string // udocker 可执行文件路径
+}
+
+func NewDriver(binPath string) *UdockerDriver {
+	return &UdockerDriver{BinPath: binPath}
+}
+
+// Init 检测 UDocker 是否可用
+func (d *UdockerDriver) Init(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, d.BinPath, "version")
+	// 安卓环境下需设置环境变量，防止找不到库
+	// cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH=...") 
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("UDocker 未安装或环境配置错误: %s", string(out))
+	}
+	return nil
+}
+
+// PullImage 拉取镜像
+func (d *UdockerDriver) PullImage(ctx context.Context, image string) error {
+	// 对应 MVP：镜像拉取支持重试
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		cmd := exec.CommandContext(ctx, d.BinPath, "pull", image)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("拉取失败: %s", string(out))
+		time.Sleep(2 * time.Second) // 失败等待后重试
+	}
+	return lastErr
+}
+
+// CreateContainer 创建容器 (含资源限制)
+func (d *UdockerDriver) CreateContainer(ctx context.Context, conf *container.Config) (string, error) {
+	args := []string{"create", "--name", conf.Name}
+
+	// 1. 安全沙箱配置
+	if conf.NetworkDisabled {
+		// UDocker/Proot 常见隔离方式：仅本地回环
+		args = append(args, "--net=none") 
+	}
+
+	// 2. 资源限制 (CPU/内存)
+	// 注意：UDocker 的资源限制依赖于后端引擎 (如 Fakechroot 或 PRoot)
+	if conf.Memory > 0 {
+		args = append(args, fmt.Sprintf("--memory=%dm", conf.Memory/1024/1024))
+	}
+
+	// 3. 端口映射
+	for _, p := range conf.Ports {
+		args = append(args, "-p", p)
+	}
+
+	args = append(args, conf.Image)
+	args = append(args, conf.Cmd...)
+
+	cmd := exec.CommandContext(ctx, d.BinPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("创建容器失败: %s", string(out))
+	}
+
+	// 返回容器名称作为 ID
+	return conf.Name, nil
+}
+
+// StartContainer 启动容器
+func (d *UdockerDriver) StartContainer(ctx context.Context, id string) error {
+	cmd := exec.CommandContext(ctx, d.BinPath, "start", id)
+	// 安卓下需特别注意：这里可能需要开启后台守护
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("启动失败: %s", string(out))
+	}
+	return nil
+}
+
+// StopContainer 停止容器
+func (m *Manager) StopContainer(containerID string) error {
+	timeout := 15 * time.Second
+	return m.cli.ContainerStop(m.ctx, containerID, &timeout)
+}
+
+// RemoveContainer 删除容器
+func (m *Manager) RemoveContainer(containerID string, force bool) error {
+	return m.cli.ContainerRemove(m.ctx, containerID, types.ContainerRemoveOptions{Force: force})
+}
+
+// ListContainers 列出所有龙虾容器（根据镜像名过滤）
+func (m *Manager) ListContainers() ([]types.Container, error) {
+	filter := filters.NewArgs()
+	filter.Add("ancestor", OpenClawImage)
+	return m.cli.ContainerList(m.ctx, types.ContainerListOptions{
+		All:     true,
+		Filters: filter,
+	})
+}

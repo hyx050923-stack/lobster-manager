@@ -1,102 +1,71 @@
+// internal/container/container.go
 package container
 
 import (
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/go-connections/nat"
-	"time"
+	"context"
 )
 
+// ContainerInfo 统一的容器信息结构（不依赖 Docker SDK 的 types.Container）
+type ContainerInfo struct {
+	ID     string
+	Name   string
+	Status string
+	Image  string
+}
+
+// Driver 定义容器驱动接口（核心解耦层）
+type Driver interface {
+	CreateAndStartContainer(ctx context.Context, opts *CreateOptions) (string, error)
+	StopContainer(ctx context.Context, containerID string) error
+	RemoveContainer(ctx context.Context, containerID string, force bool) error
+	ListContainers(ctx context.Context) ([]ContainerInfo, error)
+}
+
+// Manager 容器管理器
+type Manager struct {
+	driver Driver
+	ctx    context.Context
+}
+
+// NewManager 根据运行环境初始化不同的驱动
+func NewManager(ctx context.Context) *Manager {
+	var d Driver
+	
+	// 这里后续通过条件编译或配置判断环境
+	// 目前为了跑通安卓 MVP，我们强制注入 UDocker 驱动
+	// 实际生产环境可以通过 build tags 来区分
+	d = NewUdockerDriver() 
+	
+	return &Manager{
+		driver: d,
+		ctx:    ctx,
+	}
+}
+
+// CreateOptions 保持不变，作为通用的业务参数
 type CreateOptions struct {
 	Image          string
 	ContainerName  string
-	PortMap        map[string]string // 容器端口->宿主机端口
-	Volumes        map[string]string // 宿主机路径->容器路径
+	PortMap        map[string]string
+	Volumes        map[string]string
 	Env            []string
-	SecurityConfig *container.HostConfig
+	SecurityConfig interface{} // 暂时改为 interface{}，由具体驱动处理
 }
 
-// CreateAndStartContainer 创建并启动容器
+// --- 以下是暴露给外部的业务方法 ---
+
 func (m *Manager) CreateAndStartContainer(opts *CreateOptions) (string, error) {
-	// 配置端口映射
-	exposedPorts := nat.PortSet{}
-	portBindings := nat.PortMap{}
-	for containerPort, hostPort := range opts.PortMap {
-		port, err := nat.NewPort("tcp", containerPort)
-		if err != nil {
-			return "", err
-		}
-		exposedPorts[port] = struct{}{}
-		portBindings[port] = []nat.PortBinding{
-			{
-				HostIP:   "127.0.0.1", // 强制本地回环，可配置化
-				HostPort: hostPort,
-			},
-		}
-	}
-
-	// 挂载卷
-	var mounts []mount.Mount
-	for hostPath, containerPath := range opts.Volumes {
-		mounts = append(mounts, mount.Mount{
-			Type:     mount.TypeBind,
-			Source:   hostPath,
-			Target:   containerPath,
-			ReadOnly: true, // 默认只读，可由权限配置决定
-		})
-	}
-
-	// 准备容器配置
-	containerConfig := &container.Config{
-		Image:        opts.Image,
-		ExposedPorts: exposedPorts,
-		Env:          opts.Env,
-		// 默认命令，由镜像决定
-	}
-
-	// 合并安全配置
-	hostConfig := opts.SecurityConfig
-	if hostConfig == nil {
-		hostConfig = DefaultSecurityConfig()
-	}
-	hostConfig.PortBindings = portBindings
-	hostConfig.Mounts = mounts
-
-	// 创建容器
-	// 修正：移除了多余的 nil 参数 (platform)
-	resp, err := m.cli.ContainerCreate(m.ctx, containerConfig, hostConfig, nil, opts.ContainerName)
-	if err != nil {
-		return "", err
-	}
-
-	// 启动容器
-	err = m.cli.ContainerStart(m.ctx, resp.ID, types.ContainerStartOptions{})
-	if err != nil {
-		return "", err
-	}
-
-	return resp.ID, nil
+	return m.driver.CreateAndStartContainer(m.ctx, opts)
 }
 
-// StopContainer 停止容器
 func (m *Manager) StopContainer(containerID string) error {
-	timeout := 15 * time.Second
-	return m.cli.ContainerStop(m.ctx, containerID, &timeout)
+	return m.driver.StopContainer(m.ctx, containerID)
 }
 
-// RemoveContainer 删除容器
 func (m *Manager) RemoveContainer(containerID string, force bool) error {
-	return m.cli.ContainerRemove(m.ctx, containerID, types.ContainerRemoveOptions{Force: force})
+	return m.driver.RemoveContainer(m.ctx, containerID, force)
 }
 
-// ListContainers 列出所有龙虾容器（根据镜像名过滤）
-func (m *Manager) ListContainers() ([]types.Container, error) {
-	filter := filters.NewArgs()
-	filter.Add("ancestor", OpenClawImage)
-	return m.cli.ContainerList(m.ctx, types.ContainerListOptions{
-		All:     true,
-		Filters: filter,
-	})
+func (m *Manager) ListContainers() ([]ContainerInfo, error) {
+	return m.driver.ListContainers(m.ctx)
 }
