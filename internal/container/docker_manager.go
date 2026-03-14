@@ -5,29 +5,35 @@ package container
 import (
 	"context"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
-type Manager struct {
+type DockerManager struct {
 	cli *client.Client
 	ctx context.Context
 }
 
-func NewManager() (*Manager, error) {
+func NewDockerManager() (*DockerManager, error) {
+	var _ Manager = (*UDockerManager)(nil)
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv,
 		client.WithAPIVersionNegotiation(),
 	)
+
 	if err != nil {
 		return nil, err
 	}
 
-	return &Manager{
+	return &DockerManager{
 		cli: cli,
 		ctx: context.Background(),
 	}, nil
 }
 
-func (m *Manager) Close() error {
-	return m.cli.Close()
+func (m *UDockerManager) PullImage(image string) error {
+
+	_, err := m.exec("pull", image)
+
+	return err
 }
